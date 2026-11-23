@@ -1,3 +1,5 @@
+import { withDeadline } from './deadline';
+
 /** The two Valkey commands the cache needs, so tests can supply a fake. */
 export interface KeyValueStore {
 	get(key: string): Promise<string | null>;
@@ -51,12 +53,4 @@ export function createLinkCache(store: KeyValueStore, timeoutMs = TIMEOUT_MS) {
 	}
 
 	return { find, remember };
-}
-
-function withDeadline<T>(promise: Promise<T>, ms: number): Promise<T> {
-	let timer: ReturnType<typeof setTimeout> | undefined;
-	const deadline = new Promise<never>((_, reject) => {
-		timer = setTimeout(() => reject(new Error(`No answer in ${ms} ms`)), ms);
-	});
-	return Promise.race([promise, deadline]).finally(() => clearTimeout(timer));
 }
