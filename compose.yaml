@@ -1,0 +1,15 @@
+# Local development database. Host port 5433 avoids clashing with a Postgres
+# already listening on the default 5432.
+services:
+  db:
+    image: postgres:19
+    ports:
+      - 127.0.0.1:5433:5432
+    environment:
+      POSTGRES_USER: root
+      POSTGRES_PASSWORD: mysecretpassword
+      POSTGRES_DB: local
+    volumes:
+      - pgdata:/var/lib/postgresql
+volumes:
+  pgdata:

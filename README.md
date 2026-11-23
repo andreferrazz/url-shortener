@@ -1,56 +1,46 @@
-# sv
+# url-shortener
 
-Everything you need to build a Svelte project, powered by [`sv`](https://github.com/sveltejs/cli).
+Paste a long URL, get a short link. Opening the short link redirects to the
+original URL.
 
-## Creating a project
+Built with SvelteKit, Postgres and Drizzle.
 
-If you're seeing this, you've probably already done this step. Congrats!
+## Run it locally
 
-```sh
-# create a new project
-npx sv create my-app
-```
-
-To recreate this project with the same configuration:
+You need Node 26 (`mise install` picks it up from `mise.toml`), pnpm and Docker.
 
 ```sh
-# recreate this project
-pnpm dlx sv@1.7.0 create --template minimal --types ts --add prettier eslint --install pnpm .
+pnpm install
+cp .env.example .env
+pnpm db:start     # Postgres in Docker, on localhost:5433
+pnpm db:migrate   # create the tables
+pnpm dev
 ```
 
-## Adding features
+## Commands
 
-Add features to your project with `sv add`:
+| Command            | What it does                                |
+| ------------------ | ------------------------------------------- |
+| `pnpm dev`         | Start the dev server                        |
+| `pnpm test`        | Run the unit tests                          |
+| `pnpm check`       | Type-check the project                      |
+| `pnpm lint`        | Check formatting and lint                   |
+| `pnpm build`       | Build for production                        |
+| `pnpm db:generate` | Write a migration after changing the schema |
+| `pnpm db:migrate`  | Apply pending migrations                    |
 
-```sh
-npx sv add
-```
+## How it works
 
-For example, to add Tailwind CSS:
+- Links live in one `links` table, keyed by slug
+  (`src/lib/server/db/schema.ts`). Schema changes go through the SQL
+  migrations in `drizzle/`.
+- A slug is 7 random base62 characters from the cryptographic generator, so
+  links cannot be guessed or enumerated. A collision is rejected by the primary
+  key and retried with a new slug.
+- The redirect answers with a 302, so every visit reaches the server and a link
+  can still be changed or removed later.
 
-```sh
-npx sv add tailwindcss
-```
+## Not built yet
 
-## Developing
-
-Once you've created a project and installed dependencies with `npm install` (or `pnpm install` or `yarn`), start a development server:
-
-```sh
-npm run dev
-
-# or start the server and open the app in a new browser tab
-npm run dev -- --open
-```
-
-## Building
-
-To create a production version of your app:
-
-```sh
-npm run build
-```
-
-You can preview the production build with `npm run preview`.
-
-> To deploy your app, you may need to install an [adapter](https://svelte.dev/docs/kit/adapters) for your target environment.
+Anyone who can reach the app can create links: there is no sign-in and no rate
+limit. Add one of them before deploying it somewhere public.
