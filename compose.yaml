@@ -11,5 +11,13 @@ services:
       POSTGRES_DB: local
     volumes:
       - pgdata:/var/lib/postgresql
+  # Redirect cache. Memory is capped and the least recently used keys are
+  # dropped when it fills up, so it never needs cleaning. Nothing is saved to
+  # disk: losing the cache only costs a few database reads.
+  valkey:
+    image: valkey/valkey:9
+    command: valkey-server --maxmemory 256mb --maxmemory-policy allkeys-lru --save "" --appendonly no
+    ports:
+      - 127.0.0.1:6379:6379
 volumes:
   pgdata:

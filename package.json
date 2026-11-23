@@ -39,6 +39,7 @@
 		"postgres": "^4.1.1",
 		"prettier": "^3.10.1",
 		"prettier-plugin-svelte": "^4.1.1",
+		"redis": "^6.4.0",
 		"svelte": "^5.57.3",
 		"svelte-check": "^4.7.8",
 		"typescript": "^6.0.3",
