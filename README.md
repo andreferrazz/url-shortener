@@ -12,10 +12,19 @@ You need Node 26 (`mise install` picks it up from `mise.toml`), pnpm and Docker.
 ```sh
 pnpm install
 cp .env.example .env
-pnpm db:start     # Postgres (localhost:5433) and Valkey (localhost:6379) in Docker
+pnpm db:start     # Postgres, PgBouncer and Valkey in Docker
 pnpm db:migrate   # create the tables
 pnpm dev
 ```
+
+Locally the app talks to Postgres through PgBouncer, the same way it does in
+production, so pooler-only problems show up on your machine first.
+
+| Service   | Address          | Used by                            |
+| --------- | ---------------- | ---------------------------------- |
+| PgBouncer | `localhost:6432` | The app (`DATABASE_URL`)           |
+| Postgres  | `localhost:5433` | Migrations (`DATABASE_DIRECT_URL`) |
+| Valkey    | `localhost:6379` | The app (`VALKEY_URL`)             |
 
 ## Commands
 
@@ -43,16 +52,18 @@ flowchart LR
     end
 
     cache[("<b>Valkey</b><br/>cached targets,<br/>rate-limit counters")]
+    pooler["<b>PgBouncer</b><br/>shared connection pool"]
     db[("<b>Postgres</b><br/>links table,<br/>slug is the primary key")]
 
     visitor -- "1. POST / with a long URL" --> create
-    create -- "insert, retry if the slug is taken" --> db
+    create -- "insert, retry if the slug is taken" --> pooler
     create -- "count the client, store the new link" --> cache
     create -. "short link, 400, or 429 over the limit" .-> visitor
 
     visitor -- "2. GET /aB3xY9z" --> redirect
     redirect -- "look up first" --> cache
-    redirect -- "on a miss: one read by primary key" --> db
+    redirect -- "on a miss: one read by primary key" --> pooler
+    pooler --> db
     redirect -. "302 to the target, or 404" .-> visitor
 
     visitor -- "3. follows the redirect" --> target
@@ -92,28 +103,30 @@ provide:
 - **A load balancer** in front of the instances. Point its health check at
   `GET /health`, which returns 200 when the instance can reach the database and
   503 within two seconds when it cannot.
-- **A connection pooler** such as PgBouncer in transaction mode between the
-  instances and Postgres. The app does not use prepared statements, so
-  transaction mode is safe.
+- **A connection pooler**: PgBouncer in transaction mode, in its own container
+  next to Postgres, with every instance pointed at it. One shared pooler is
+  what caps the connections Postgres sees; a pooler per instance would not.
+  The app does not use prepared statements, so transaction mode is safe.
 - **Valkey** (or Redis), shared by all instances, with a memory cap and
   `allkeys-lru` eviction so it drops the least used links when full. It needs
   no persistence. `/health` does not check it, because an instance without
   Valkey still serves redirects.
-- **Migrations as a separate step.** Run `pnpm db:migrate` once per release,
-  against Postgres directly and not through the pooler. Instances never migrate
+- **Migrations as a separate step.** Run `pnpm db:migrate` once per release
+  with `DATABASE_DIRECT_URL` pointing at Postgres itself, not the pooler. Instances never migrate
   on start.
 
 Environment variables for each instance:
 
-| Variable            | Purpose                                                                                |
-| ------------------- | -------------------------------------------------------------------------------------- |
-| `DATABASE_URL`      | Connection string, pointing at the pooler                                              |
-| `DATABASE_POOL_MAX` | Most connections one instance opens (default 10). Instances × this must fit the pooler |
-| `VALKEY_URL`        | Connection string of the shared Valkey, such as `redis://valkey:6379`                  |
-| `PORT`              | Port to listen on (default 3000)                                                       |
-| `ORIGIN`            | Public URL of the app, such as `https://sho.rt`. Short links are built from it         |
-| `ADDRESS_HEADER`    | Header carrying the visitor's IP behind a proxy, such as `X-Forwarded-For`             |
-| `XFF_DEPTH`         | Number of trusted proxies in front of the app, when using `X-Forwarded-For`            |
+| Variable              | Purpose                                                                                |
+| --------------------- | -------------------------------------------------------------------------------------- |
+| `DATABASE_URL`        | Connection string, pointing at the pooler                                              |
+| `DATABASE_DIRECT_URL` | Connection string of Postgres itself. Only migrations use it                           |
+| `DATABASE_POOL_MAX`   | Most connections one instance opens (default 10). Instances × this must fit the pooler |
+| `VALKEY_URL`          | Connection string of the shared Valkey, such as `redis://valkey:6379`                  |
+| `PORT`                | Port to listen on (default 3000)                                                       |
+| `ORIGIN`              | Public URL of the app, such as `https://sho.rt`. Short links are built from it         |
+| `ADDRESS_HEADER`      | Header carrying the visitor's IP behind a proxy, such as `X-Forwarded-For`             |
+| `XFF_DEPTH`           | Number of trusted proxies in front of the app, when using `X-Forwarded-For`            |
 
 Set `ADDRESS_HEADER` whenever the app sits behind a proxy or load balancer.
 Without it every visitor appears to come from the proxy's address and they all
