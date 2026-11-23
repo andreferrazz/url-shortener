@@ -1,6 +1,8 @@
-# Local development database. Host port 5433 avoids clashing with a Postgres
-# already listening on the default 5432.
+# Local development services, laid out like production: the app reaches
+# Postgres through PgBouncer, and Valkey sits beside them.
 services:
+  # Host port 5433 avoids clashing with a Postgres already on the default 5432.
+  # Only migrations connect here directly.
   db:
     image: postgres:19
     ports:
@@ -11,6 +13,22 @@ services:
       POSTGRES_DB: local
     volumes:
       - pgdata:/var/lib/postgresql
+  # Connection pooler in its own container, as in production. The app connects
+  # here (localhost:6432). Transaction mode hands each query to whichever
+  # database connection is free, which is what breaks apps that rely on
+  # prepared statements or session state, so running it locally catches that.
+  pgbouncer:
+    image: edoburu/pgbouncer:v1.26.1-p0
+    depends_on:
+      - db
+    ports:
+      - 127.0.0.1:6432:5432
+    environment:
+      DATABASE_URL: postgres://root:mysecretpassword@db:5432/local
+      POOL_MODE: transaction
+      AUTH_TYPE: scram-sha-256
+      MAX_CLIENT_CONN: 200
+      DEFAULT_POOL_SIZE: 20
   # Redirect cache. Memory is capped and the least recently used keys are
   # dropped when it fills up, so it never needs cleaning. Nothing is saved to
   # disk: losing the cache only costs a few database reads.
