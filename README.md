@@ -29,6 +29,36 @@ pnpm dev
 | `pnpm db:generate` | Write a migration after changing the schema |
 | `pnpm db:migrate`  | Apply pending migrations                    |
 
+## System design
+
+```mermaid
+flowchart LR
+    visitor([Browser])
+    target([Target site])
+
+    subgraph app [SvelteKit server]
+        create["<b>Create page</b><br/>checks the URL,<br/>picks a random 7-character slug"]
+        redirect["<b>Redirect route</b><br/>only matches paths<br/>shaped like a slug"]
+    end
+
+    db[("<b>Postgres</b><br/>links table,<br/>slug is the primary key")]
+
+    visitor -- "1. POST / with a long URL" --> create
+    create -- "insert, retry if the slug is taken" --> db
+    create -. "short link, or 400" .-> visitor
+
+    visitor -- "2. GET /aB3xY9z" --> redirect
+    redirect -- "one read by primary key" --> db
+    redirect -. "302 to the target, or 404" .-> visitor
+
+    visitor -- "3. follows the redirect" --> target
+```
+
+There are two paths through the app. Creating a link validates the URL, picks
+a random slug and inserts a row. Opening a short link is a single read by
+primary key followed by a 302; it is the path that carries almost all the
+traffic, so it does nothing else.
+
 ## How it works
 
 - Links live in one `links` table, keyed by slug
