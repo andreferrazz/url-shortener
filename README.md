@@ -3,7 +3,7 @@
 Paste a long URL, get a short link. Opening the short link redirects to the
 original URL.
 
-Built with SvelteKit, Postgres and Drizzle, with Valkey as a redirect cache.
+Built with SvelteKit, Postgres and Drizzle, with Valkey for the redirect cache and the rate limit.
 
 ## Run it locally
 
@@ -42,13 +42,13 @@ flowchart LR
         redirect["<b>Redirect route</b><br/>only matches paths<br/>shaped like a slug"]
     end
 
-    cache[("<b>Valkey</b><br/>slug to target,<br/>kept for 24 hours")]
+    cache[("<b>Valkey</b><br/>cached targets,<br/>rate-limit counters")]
     db[("<b>Postgres</b><br/>links table,<br/>slug is the primary key")]
 
     visitor -- "1. POST / with a long URL" --> create
     create -- "insert, retry if the slug is taken" --> db
-    create -- "store the new link" --> cache
-    create -. "short link, or 400" .-> visitor
+    create -- "count the client, store the new link" --> cache
+    create -. "short link, 400, or 429 over the limit" .-> visitor
 
     visitor -- "2. GET /aB3xY9z" --> redirect
     redirect -- "look up first" --> cache
@@ -58,7 +58,7 @@ flowchart LR
     visitor -- "3. follows the redirect" --> target
 ```
 
-There are two paths through the app. Creating a link validates the URL, picks
+There are two paths through the app. Creating a link validates the URL, checks the client's rate limit, picks
 a random slug and inserts a row. Opening a short link looks the slug up in
 Valkey and falls back to a single read by primary key in Postgres, then answers
 with a 302. It is the path that carries almost all the traffic, so it does
@@ -75,6 +75,10 @@ nothing else.
 - Targets are cached in Valkey for 24 hours, and a new link is cached as soon
   as it is created, so most clicks never reach Postgres. Valkey is optional at
   runtime: if it is down or slow, redirects read Postgres instead.
+- Creating links is rate limited to 10 per minute and 100 per day for each
+  client. A client is an IPv4 address or an IPv6 /64 prefix. The counters live
+  in Valkey, so the limit holds across instances. If Valkey is down the limit
+  is not enforced, so that creating links keeps working.
 - The redirect answers with a 302, so every visit reaches the server and a link
   can still be changed or removed later.
 
@@ -111,11 +115,17 @@ Environment variables for each instance:
 | `ADDRESS_HEADER`    | Header carrying the visitor's IP behind a proxy, such as `X-Forwarded-For`             |
 | `XFF_DEPTH`         | Number of trusted proxies in front of the app, when using `X-Forwarded-For`            |
 
+Set `ADDRESS_HEADER` whenever the app sits behind a proxy or load balancer.
+Without it every visitor appears to come from the proxy's address and they all
+share one rate limit. Do not set it when the app is reached directly, or
+visitors could pick their own address by sending the header themselves.
+
 On `SIGTERM` an instance stops accepting requests, finishes the ones in flight,
 closes its database connections and exits, so instances can be replaced one at
 a time without dropping requests.
 
 ## Not built yet
 
-Anyone who can reach the app can create links: there is no sign-in and no rate
-limit. Add one of them before deploying it somewhere public.
+There is no sign-in, so links have no owner, and a link cannot be edited or
+taken down once created. The rate limit slows abuse down but does not stop
+someone who controls many IP addresses.

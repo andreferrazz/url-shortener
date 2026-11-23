@@ -1,6 +1,7 @@
 import { json } from '@sveltejs/kit';
 import { sql } from 'drizzle-orm';
 import { db } from '#lib/server/db/index.ts';
+import { withDeadline } from '#lib/server/deadline.ts';
 import type { RequestHandler } from './$types';
 
 // A pooler queues queries while the database is away instead of refusing them,
@@ -11,18 +12,11 @@ const TIMEOUT_MS = 2000;
 // receiving traffic. The path is deliberately not 7 characters long, so it can
 // never shadow a slug.
 export const GET: RequestHandler = async () => {
-	let timer: ReturnType<typeof setTimeout> | undefined;
-	const deadline = new Promise<never>((_, reject) => {
-		timer = setTimeout(() => reject(new Error(`No answer in ${TIMEOUT_MS} ms`)), TIMEOUT_MS);
-	});
-
 	try {
-		await Promise.race([db.execute(sql`select 1`), deadline]);
+		await withDeadline(db.execute(sql`select 1`), TIMEOUT_MS);
 		return json({ status: 'ok' });
 	} catch (error) {
 		console.error('Health check failed:', error instanceof Error ? error.message : error);
 		return json({ status: 'unavailable' }, { status: 503 });
-	} finally {
-		clearTimeout(timer);
 	}
 };
