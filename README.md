@@ -26,6 +26,7 @@ pnpm dev
 | `pnpm check`       | Type-check the project                      |
 | `pnpm lint`        | Check formatting and lint                   |
 | `pnpm build`       | Build for production                        |
+| `node build`       | Run the production build                    |
 | `pnpm db:generate` | Write a migration after changing the schema |
 | `pnpm db:migrate`  | Apply pending migrations                    |
 
@@ -69,6 +70,38 @@ traffic, so it does nothing else.
   key and retried with a new slug.
 - The redirect answers with a 302, so every visit reaches the server and a link
   can still be changed or removed later.
+
+## Running several instances
+
+`pnpm build` produces a plain Node server, started with `node build`. It keeps
+nothing in memory between requests, so any number of copies can run behind a
+load balancer. This repo does not ship deployment files; a deployment needs to
+provide:
+
+- **A load balancer** in front of the instances. Point its health check at
+  `GET /health`, which returns 200 when the instance can reach the database and
+  503 within two seconds when it cannot.
+- **A connection pooler** such as PgBouncer in transaction mode between the
+  instances and Postgres. The app does not use prepared statements, so
+  transaction mode is safe.
+- **Migrations as a separate step.** Run `pnpm db:migrate` once per release,
+  against Postgres directly and not through the pooler. Instances never migrate
+  on start.
+
+Environment variables for each instance:
+
+| Variable            | Purpose                                                                                |
+| ------------------- | -------------------------------------------------------------------------------------- |
+| `DATABASE_URL`      | Connection string, pointing at the pooler                                              |
+| `DATABASE_POOL_MAX` | Most connections one instance opens (default 10). Instances × this must fit the pooler |
+| `PORT`              | Port to listen on (default 3000)                                                       |
+| `ORIGIN`            | Public URL of the app, such as `https://sho.rt`. Short links are built from it         |
+| `ADDRESS_HEADER`    | Header carrying the visitor's IP behind a proxy, such as `X-Forwarded-For`             |
+| `XFF_DEPTH`         | Number of trusted proxies in front of the app, when using `X-Forwarded-For`            |
+
+On `SIGTERM` an instance stops accepting requests, finishes the ones in flight,
+closes its database connections and exits, so instances can be replaced one at
+a time without dropping requests.
 
 ## Not built yet
 
