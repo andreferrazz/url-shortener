@@ -1,18 +1,100 @@
-# Local development services, laid out like production: the app reaches
-# Postgres through PgBouncer, and Valkey sits beside them.
+# Local development services, laid out like production:
+#
+#   app -> PgBouncer -> HAProxy -> Postgres leader or standbys (Patroni + etcd)
+#   app -> Valkey
+#
+# Everything here uses throwaway passwords and listens on localhost only.
+
+x-postgres-node: &postgres-node
+  build: docker/postgres
+  depends_on:
+    - etcd
+  # Give Postgres time to shut down cleanly and hand over leadership.
+  stop_grace_period: 30s
+  # Healthy once this node accepts connections, as leader or as standby.
+  healthcheck:
+    test: [CMD, pg_isready, --quiet]
+    interval: 2s
+    timeout: 3s
+    retries: 150
+
+x-postgres-env: &postgres-env
+  PATRONI_SUPERUSER_USERNAME: postgres
+  PATRONI_SUPERUSER_PASSWORD: superuser-password
+  PATRONI_REPLICATION_USERNAME: replicator
+  PATRONI_REPLICATION_PASSWORD: replication-password
+  PATRONI_REWIND_USERNAME: rewind
+  PATRONI_REWIND_PASSWORD: rewind-password
+  # The application's role and database, created when the cluster is first made.
+  APP_DB_USER: root
+  APP_DB_PASSWORD: mysecretpassword
+  APP_DB_NAME: local
+
 services:
-  # Host port 5433 avoids clashing with a Postgres already on the default 5432.
-  # Only migrations connect here directly.
-  db:
-    image: postgres:19
-    ports:
-      - 127.0.0.1:5433:5432
-    environment:
-      POSTGRES_USER: root
-      POSTGRES_PASSWORD: mysecretpassword
-      POSTGRES_DB: local
+  # Patroni's consensus store: the nodes agree here on who the leader is.
+  # One node is enough locally; production needs three.
+  etcd:
+    image: quay.io/coreos/etcd:v3.7.4
+    command:
+      - etcd
+      - --name=etcd
+      - --data-dir=/etcd-data
+      - --listen-client-urls=http://0.0.0.0:2379
+      - --advertise-client-urls=http://etcd:2379
+      - --listen-peer-urls=http://0.0.0.0:2380
+      - --initial-advertise-peer-urls=http://etcd:2380
+      - --initial-cluster=etcd=http://etcd:2380
     volumes:
-      - pgdata:/var/lib/postgresql
+      - etcd-data:/etcd-data
+
+  # Three identical Postgres nodes. Patroni makes one the leader and the other
+  # two standbys; which is which changes on a failover.
+  pg1:
+    <<: *postgres-node
+    hostname: pg1
+    environment:
+      <<: *postgres-env
+      PATRONI_NAME: pg1
+      PATRONI_RESTAPI_CONNECT_ADDRESS: pg1:8008
+      PATRONI_POSTGRESQL_CONNECT_ADDRESS: pg1:5432
+    volumes:
+      - pg1-data:/var/lib/postgresql
+  pg2:
+    <<: *postgres-node
+    hostname: pg2
+    environment:
+      <<: *postgres-env
+      PATRONI_NAME: pg2
+      PATRONI_RESTAPI_CONNECT_ADDRESS: pg2:8008
+      PATRONI_POSTGRESQL_CONNECT_ADDRESS: pg2:5432
+    volumes:
+      - pg2-data:/var/lib/postgresql
+  pg3:
+    <<: *postgres-node
+    hostname: pg3
+    environment:
+      <<: *postgres-env
+      PATRONI_NAME: pg3
+      PATRONI_RESTAPI_CONNECT_ADDRESS: pg3:8008
+      PATRONI_POSTGRESQL_CONNECT_ADDRESS: pg3:5432
+    volumes:
+      - pg3-data:/var/lib/postgresql
+
+  # Finds the leader and the standbys by asking each node's Patroni API.
+  # localhost:5433 reaches the leader directly, for migrations.
+  # http://localhost:7000 shows which node is which.
+  haproxy:
+    image: haproxy:3.4
+    depends_on:
+      - pg1
+      - pg2
+      - pg3
+    ports:
+      - 127.0.0.1:5433:5000
+      - 127.0.0.1:7000:7000
+    volumes:
+      - ./docker/haproxy/haproxy.cfg:/usr/local/etc/haproxy/haproxy.cfg:ro
+
   # Connection pooler in its own container, as in production. The app connects
   # here (localhost:6432). Transaction mode hands each query to whichever
   # database connection is free, which is what breaks apps that rely on
@@ -20,15 +102,25 @@ services:
   pgbouncer:
     image: edoburu/pgbouncer:v1.26.1-p0
     depends_on:
-      - db
+      - haproxy
     ports:
       - 127.0.0.1:6432:5432
-    environment:
-      DATABASE_URL: postgres://root:mysecretpassword@db:5432/local
-      POOL_MODE: transaction
-      AUTH_TYPE: scram-sha-256
-      MAX_CLIENT_CONN: 200
-      DEFAULT_POOL_SIZE: 20
+    # Healthy once HAProxy has found both a leader and somewhere to read from,
+    # which is when the app and migrations can connect. `pnpm db:start` waits
+    # for this.
+    healthcheck:
+      test:
+        [
+          CMD-SHELL,
+          pg_isready --quiet --host haproxy --port 5000 && pg_isready --quiet --host haproxy --port 5001
+        ]
+      interval: 2s
+      timeout: 3s
+      retries: 150
+    volumes:
+      - ./docker/pgbouncer/pgbouncer.ini:/etc/pgbouncer/pgbouncer.ini:ro
+      - ./docker/pgbouncer/userlist.txt:/etc/pgbouncer/userlist.txt:ro
+
   # Redirect cache. Memory is capped and the least recently used keys are
   # dropped when it fills up, so it never needs cleaning. Nothing is saved to
   # disk: losing the cache only costs a few database reads.
@@ -37,5 +129,9 @@ services:
     command: valkey-server --maxmemory 256mb --maxmemory-policy allkeys-lru --save "" --appendonly no
     ports:
       - 127.0.0.1:6379:6379
+
 volumes:
-  pgdata:
+  etcd-data:
+  pg1-data:
+  pg2-data:
+  pg3-data:
