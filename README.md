@@ -12,19 +12,24 @@ You need Node 26 (`mise install` picks it up from `mise.toml`), pnpm and Docker.
 ```sh
 pnpm install
 cp .env.example .env
-pnpm db:start     # Postgres, PgBouncer and Valkey in Docker
+pnpm db:start     # database cluster, PgBouncer and Valkey in Docker; waits until ready
 pnpm db:migrate   # create the tables
 pnpm dev
 ```
 
-Locally the app talks to Postgres through PgBouncer, the same way it does in
-production, so pooler-only problems show up on your machine first.
+The local services are laid out like production: three Postgres nodes managed
+by Patroni (one leader, two standbys), HAProxy to find the leader, PgBouncer in
+front, and Valkey. Problems that only appear behind a pooler or during a
+failover show up on your machine first. See
+[docs/operations.md](docs/operations.md) for how it fits together and how to
+rehearse a failover.
 
-| Service   | Address          | Used by                            |
-| --------- | ---------------- | ---------------------------------- |
-| PgBouncer | `localhost:6432` | The app (`DATABASE_URL`)           |
-| Postgres  | `localhost:5433` | Migrations (`DATABASE_DIRECT_URL`) |
-| Valkey    | `localhost:6379` | The app (`VALKEY_URL`)             |
+| Service         | Address                 | Used by                                                                                  |
+| --------------- | ----------------------- | ---------------------------------------------------------------------------------------- |
+| PgBouncer       | `localhost:6432`        | The app: `local` for writes (`DATABASE_URL`), `local_ro` for reads (`DATABASE_READ_URL`) |
+| Database leader | `localhost:5433`        | Migrations (`DATABASE_DIRECT_URL`)                                                       |
+| Valkey          | `localhost:6379`        | The app (`VALKEY_URL`)                                                                   |
+| HAProxy status  | <http://localhost:7000> | You, to see which node is leader                                                         |
 
 ## Commands
 
@@ -37,6 +42,8 @@ production, so pooler-only problems show up on your machine first.
 | `pnpm build`       | Build for production                        |
 | `node build`       | Run the production build                    |
 | `pnpm db:generate` | Write a migration after changing the schema |
+| `pnpm db:status`   | Show the database leader and standbys       |
+| `pnpm db:stop`     | Stop the local services, keeping their data |
 | `pnpm db:migrate`  | Apply pending migrations                    |
 
 ## System design
@@ -53,7 +60,7 @@ flowchart LR
 
     cache[("<b>Valkey</b><br/>cached targets,<br/>rate-limit counters")]
     pooler["<b>PgBouncer</b><br/>shared connection pool"]
-    db[("<b>Postgres</b><br/>links table,<br/>slug is the primary key")]
+    db[("<b>Postgres cluster</b><br/>one leader, two standbys,<br/>automatic failover")]
 
     visitor -- "1. POST / with a long URL" --> create
     create -- "insert, retry if the slug is taken" --> pooler
@@ -62,7 +69,7 @@ flowchart LR
 
     visitor -- "2. GET /aB3xY9z" --> redirect
     redirect -- "look up first" --> cache
-    redirect -- "on a miss: one read by primary key" --> pooler
+    redirect -- "on a miss: one read from a standby" --> pooler
     pooler --> db
     redirect -. "302 to the target, or 404" .-> visitor
 
@@ -71,7 +78,7 @@ flowchart LR
 
 There are two paths through the app. Creating a link validates the URL, checks the client's rate limit, picks
 a random slug and inserts a row. Opening a short link looks the slug up in
-Valkey and falls back to a single read by primary key in Postgres, then answers
+Valkey and falls back to a single read by primary key from a Postgres standby, then answers
 with a 302. It is the path that carries almost all the traffic, so it does
 nothing else.
 
@@ -108,8 +115,12 @@ provide:
   (from the cache, a replica or the primary) and 503 only when it can serve
   none. Its body reports the primary, the replica and the cache separately,
   for monitoring.
+- **A Postgres cluster with automatic failover**: Patroni with one leader and
+  two synchronous-quorum standbys, etcd, and HAProxy to route writes to the
+  leader and reads to the standbys. [docs/operations.md](docs/operations.md)
+  describes it, including what the local setup simplifies.
 - **A connection pooler**: PgBouncer in transaction mode, in its own container
-  next to Postgres, with every instance pointed at it. One shared pooler is
+  in front of HAProxy, with every instance pointed at it. One shared pooler is
   what caps the connections Postgres sees; a pooler per instance would not.
   The app does not use prepared statements, so transaction mode is safe.
 - **Valkey** (or Redis), shared by all instances, with a memory cap and
@@ -117,7 +128,7 @@ provide:
   no persistence. An instance without Valkey still serves redirects from the
   database, so losing it alone does not fail `/health`.
 - **Migrations as a separate step.** Run `pnpm db:migrate` once per release
-  with `DATABASE_DIRECT_URL` pointing at Postgres itself, not the pooler. Instances never migrate
+  with `DATABASE_DIRECT_URL` pointing at the database leader, not the pooler. Instances never migrate
   on start.
 
 Environment variables for each instance:

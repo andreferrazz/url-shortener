@@ -1,0 +1,51 @@
+# Shared by every node. What differs per node (its name and addresses) and the
+# passwords come from PATRONI_* environment variables in compose.yaml.
+scope: url-shortener
+namespace: /service/
+
+restapi:
+  listen: 0.0.0.0:8008
+
+etcd3:
+  hosts: etcd:2379
+
+# Applied once, when the first node creates the cluster. After that these
+# settings live in etcd and are changed with `patronictl edit-config`.
+bootstrap:
+  dcs:
+    # A leader that stops renewing its lock is replaced after `ttl` seconds.
+    ttl: 30
+    loop_wait: 10
+    retry_timeout: 10
+    # A standby more than 1 MB behind is never promoted.
+    maximum_lag_on_failover: 1048576
+    # A commit is confirmed only once at least one standby has it, so a link
+    # the app has acknowledged survives the loss of the leader. "quorum" means
+    # any one of the standbys, so losing one standby does not stall writes.
+    synchronous_mode: quorum
+    synchronous_node_count: 1
+    postgresql:
+      # Lets a former leader rejoin as a standby without a full copy.
+      use_pg_rewind: true
+      parameters:
+        max_connections: 100
+        hot_standby: 'on'
+        wal_log_hints: 'on'
+  initdb:
+    - encoding: UTF8
+    - data-checksums
+  post_bootstrap: /usr/local/bin/post-bootstrap.sh
+
+postgresql:
+  listen: 0.0.0.0:5432
+  data_dir: /var/lib/postgresql/pgdata
+  bin_dir: /usr/lib/postgresql/19/bin
+  pgpass: /tmp/pgpass
+  # A new standby copies the leader straight away instead of waiting for the
+  # leader's next scheduled checkpoint, which can take minutes.
+  basebackup:
+    - checkpoint: fast
+  pg_hba:
+    - local all all trust
+    - host replication replicator all scram-sha-256
+    - host all all all scram-sha-256
