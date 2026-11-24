@@ -31,6 +31,13 @@ bootstrap:
         max_connections: 100
         hot_standby: 'on'
         wal_log_hints: 'on'
+        # Every finished write-ahead log segment is copied to the backup
+        # bucket. With a base backup, that allows restoring to any moment.
+        archive_mode: 'on'
+        archive_command: pgbackrest --stanza=url-shortener archive-push %p
+        # Close a segment at least once a minute, so a quiet database still
+        # archives recent changes.
+        archive_timeout: 60
   initdb:
     - encoding: UTF8
     - data-checksums

@@ -20,6 +20,8 @@
 		"test": "vitest run",
 		"db:start": "docker compose up -d --build --wait",
 		"db:stop": "docker compose stop",
+		"db:backup": "scripts/db-backup.sh",
+		"db:restore-test": "docker compose run --rm --no-deps --build restore-test",
 		"db:status": "docker compose exec pg1 patronictl -c /etc/patroni/patroni.yml list",
 		"db:push": "drizzle-kit push",
 		"db:generate": "drizzle-kit generate",

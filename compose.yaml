@@ -8,7 +8,10 @@
 x-postgres-node: &postgres-node
   build: docker/postgres
   depends_on:
-    - etcd
+    etcd:
+      condition: service_started
+    bucket:
+      condition: service_started
   # Give Postgres time to shut down cleanly and hand over leadership.
   stop_grace_period: 30s
   # Healthy once this node accepts connections, as leader or as standby.
@@ -29,6 +32,9 @@ x-postgres-env: &postgres-env
   APP_DB_USER: root
   APP_DB_PASSWORD: mysecretpassword
   APP_DB_NAME: local
+  # Credentials for the backup bucket.
+  PGBACKREST_REPO1_S3_KEY: backup-access-key
+  PGBACKREST_REPO1_S3_KEY_SECRET: backup-secret-key
 
 services:
   # Patroni's consensus store: the nodes agree here on who the leader is.
@@ -79,6 +85,50 @@ services:
       PATRONI_POSTGRESQL_CONNECT_ADDRESS: pg3:5432
     volumes:
       - pg3-data:/var/lib/postgresql
+
+  # Backup storage: an S3-compatible bucket kept in a local volume, standing in
+  # for real object storage. pgBackRest only speaks S3 over TLS, so bucket-init
+  # first creates a self-signed certificate and the bucket's directory.
+  bucket-init:
+    build: docker/postgres
+    user: root
+    entrypoint:
+      - sh
+      - -c
+      - |
+        set -eu
+        mkdir -p /data/pgbackrest
+        [ -f /tls/cert.pem ] || openssl req -x509 -newkey rsa:2048 -nodes -days 3650 \
+          -subj /CN=bucket -keyout /tls/key.pem -out /tls/cert.pem 2>/dev/null
+    volumes:
+      - bucket-data:/data
+      - bucket-tls:/tls
+  bucket:
+    image: versity/versitygw:v1.11.0
+    depends_on:
+      bucket-init:
+        condition: service_completed_successfully
+    environment:
+      ROOT_ACCESS_KEY: backup-access-key
+      ROOT_SECRET_KEY: backup-secret-key
+      VGW_CERT: /tls/cert.pem
+      VGW_KEY: /tls/key.pem
+      VGW_QUIET: 'true'
+    command: [--port, ':9000', posix, /data]
+    volumes:
+      - bucket-data:/data
+      - bucket-tls:/tls:ro
+
+  # Not started with the others. `pnpm db:restore-test` runs it to restore the
+  # latest backup into a throwaway container and check it, without touching
+  # the cluster. It has no volumes, so it cannot reach any node's data.
+  restore-test:
+    build: docker/postgres
+    profiles: [tools]
+    entrypoint: [restore-test.sh]
+    environment:
+      PGBACKREST_REPO1_S3_KEY: backup-access-key
+      PGBACKREST_REPO1_S3_KEY_SECRET: backup-secret-key
 
   # Finds the leader and the standbys by asking each node's Patroni API.
   # localhost:5433 reaches the leader directly, for migrations.
@@ -131,6 +181,8 @@ services:
       - 127.0.0.1:6379:6379
 
 volumes:
+  bucket-data:
+  bucket-tls:
   etcd-data:
   pg1-data:
   pg2-data:

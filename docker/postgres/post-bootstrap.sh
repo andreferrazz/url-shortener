@@ -8,3 +8,7 @@ psql --dbname "$1" --set ON_ERROR_STOP=1 \
 create role :"app_user" login password :'app_password';
 create database :"app_db" owner :"app_user";
 SQL
+
+# Prepare the backup repository in the bucket. Until this exists, archiving
+# the write-ahead log fails and Postgres keeps the segments locally.
+pgbackrest --stanza=url-shortener stanza-create
