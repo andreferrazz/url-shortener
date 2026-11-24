@@ -22,7 +22,7 @@ by Patroni (one leader, two standbys), HAProxy to find the leader, PgBouncer in
 front, and Valkey. Problems that only appear behind a pooler or during a
 failover show up on your machine first. See
 [docs/operations.md](docs/operations.md) for how it fits together and how to
-rehearse a failover.
+rehearse a failover or a restore from backup.
 
 | Service         | Address                 | Used by                                                                                  |
 | --------------- | ----------------------- | ---------------------------------------------------------------------------------------- |
@@ -33,18 +33,20 @@ rehearse a failover.
 
 ## Commands
 
-| Command            | What it does                                |
-| ------------------ | ------------------------------------------- |
-| `pnpm dev`         | Start the dev server                        |
-| `pnpm test`        | Run the unit tests                          |
-| `pnpm check`       | Type-check the project                      |
-| `pnpm lint`        | Check formatting and lint                   |
-| `pnpm build`       | Build for production                        |
-| `node build`       | Run the production build                    |
-| `pnpm db:generate` | Write a migration after changing the schema |
-| `pnpm db:status`   | Show the database leader and standbys       |
-| `pnpm db:stop`     | Stop the local services, keeping their data |
-| `pnpm db:migrate`  | Apply pending migrations                    |
+| Command                | What it does                                                      |
+| ---------------------- | ----------------------------------------------------------------- |
+| `pnpm dev`             | Start the dev server                                              |
+| `pnpm test`            | Run the unit tests                                                |
+| `pnpm check`           | Type-check the project                                            |
+| `pnpm lint`            | Check formatting and lint                                         |
+| `pnpm build`           | Build for production                                              |
+| `node build`           | Run the production build                                          |
+| `pnpm db:generate`     | Write a migration after changing the schema                       |
+| `pnpm db:backup`       | Back up the local database to the local bucket                    |
+| `pnpm db:restore-test` | Restore the latest backup into a throwaway container and check it |
+| `pnpm db:status`       | Show the database leader and standbys                             |
+| `pnpm db:stop`         | Stop the local services, keeping their data                       |
+| `pnpm db:migrate`      | Apply pending migrations                                          |
 
 ## System design
 
@@ -119,6 +121,8 @@ provide:
   two synchronous-quorum standbys, etcd, and HAProxy to route writes to the
   leader and reads to the standbys. [docs/operations.md](docs/operations.md)
   describes it, including what the local setup simplifies.
+- **Backups** with pgBackRest to object storage, on a schedule, with restores
+  tested regularly.
 - **A connection pooler**: PgBouncer in transaction mode, in its own container
   in front of HAProxy, with every instance pointed at it. One shared pooler is
   what caps the connections Postgres sees; a pooler per instance would not.

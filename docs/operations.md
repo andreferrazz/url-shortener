@@ -28,6 +28,8 @@ flowchart LR
     cluster -. "leader lock" .- etcd
 ```
 
+- **pgBackRest** copies the leader's write-ahead log and base backups to a
+  bucket. See [Backups](#backups).
 - **Patroni** runs on every Postgres node. The nodes compete for a leader lock
   in etcd; the holder is the leader and the others replicate from it. If the
   leader stops renewing the lock, a standby takes it and is promoted.
@@ -93,6 +95,56 @@ at the HAProxy write port, not at PgBouncer.
 **Rehearse a failover locally.** `docker kill` the leader's container while
 using the app, watch `pnpm db:status`, then `docker compose start` the node.
 
+## Backups
+
+Replication protects against losing a machine. It does not protect against a
+bad migration or a mistaken delete, which replicate to every standby within
+milliseconds. Backups do.
+
+- **pgBackRest** runs on the database nodes. The leader copies every finished
+  write-ahead log segment to a bucket, at least once a minute. With a base
+  backup, the log allows restoring to any moment since that backup.
+- Locally the bucket is an S3-compatible server in a container, with its data
+  in a Docker volume. In production it is real object storage, in a different
+  place from the database.
+- The two most recent full backups are kept, with the log needed to restore
+  them.
+
+```sh
+pnpm db:backup                # incremental; the first one is always full
+pnpm db:backup full
+pnpm db:restore-test          # restore the latest state into a throwaway container
+pnpm db:restore-test "2026-01-31 14:05:00+00"   # restore to that moment
+```
+
+`db:restore-test` never touches the cluster. It restores into a container with
+no volumes, starts Postgres there, prints how many links the restore holds, and
+throws the container away. Run it regularly: a backup that has not been
+restored is not known to work.
+
+Measured locally on about 650 links: a full backup took 5 seconds, a restore to
+a chosen moment took 7 seconds and returned exactly the links that existed
+then.
+
+**Backups are not scheduled here.** Production needs a timer: a full backup
+weekly and an incremental daily is a common start. Alert when the newest backup
+is too old or when log archiving falls behind.
+
+**Recovering from a bad change.** Find the moment just before it. Run
+`pnpm db:restore-test "<that moment>"` to confirm the restore holds what you
+expect, then restore for real.
+
+**Restoring the whole cluster** means stopping every node, restoring one from
+the bucket with `pgbackrest restore`, starting it as the new leader, and letting
+Patroni rebuild the standbys from it. This has not been rehearsed in this repo.
+Rehearse it before relying on it.
+
+**A cluster created before backups were added** has no backup repository and
+does not archive its log. Run once, on the leader:
+`pgbackrest --stanza=url-shortener stanza-create`, then turn on `archive_mode`
+and set `archive_command` as in `docker/postgres/patroni.yml` with
+`patronictl edit-config`, and restart the nodes.
+
 ## What the local setup simplifies
 
 Production must not copy these:
@@ -105,5 +157,6 @@ Production must not copy these:
   in separate zones.
 - **Passwords in `compose.yaml`.** Use a secret store, and TLS between every
   component.
-- **No backups yet.** Replication copies mistakes faithfully; it is not a
-  backup.
+- **The backup bucket is a volume on the same machine**, with a self-signed
+  certificate that pgBackRest is told not to verify. Use real object storage
+  elsewhere, with certificate verification on.
