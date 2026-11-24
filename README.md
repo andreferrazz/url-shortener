@@ -114,8 +114,8 @@ provide:
   The app does not use prepared statements, so transaction mode is safe.
 - **Valkey** (or Redis), shared by all instances, with a memory cap and
   `allkeys-lru` eviction so it drops the least used links when full. It needs
-  no persistence. `/health` does not check it, because an instance without
-  Valkey still serves redirects.
+  no persistence. An instance without Valkey still serves redirects from the
+  database, so losing it alone does not fail `/health`.
 - **Migrations as a separate step.** Run `pnpm db:migrate` once per release
   with `DATABASE_DIRECT_URL` pointing at Postgres itself, not the pooler. Instances never migrate
   on start.
