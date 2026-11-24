@@ -1,4 +1,4 @@
-import { client } from '#lib/server/db/index.ts';
+import { client, readClient } from '#lib/server/db/index.ts';
 import { valkey } from '#lib/server/valkey.ts';
 
 // The Node adapter emits this once it has stopped accepting requests and the
@@ -6,5 +6,6 @@ import { valkey } from '#lib/server/valkey.ts';
 // here lets the process exit promptly during a rolling restart.
 process.on('sveltekit:shutdown', () => {
 	void client.end({ timeout: 5 });
+	if (readClient !== client) void readClient.end({ timeout: 5 });
 	valkey.destroy();
 });

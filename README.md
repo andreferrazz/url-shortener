@@ -90,6 +90,9 @@ nothing else.
   client. A client is an IPv4 address or an IPv6 /64 prefix. The counters live
   in Valkey, so the limit holds across instances. If Valkey is down the limit
   is not enforced, so that creating links keeps working.
+- When the primary database is down, redirects keep working from the cache
+  and, when `DATABASE_READ_URL` is set, from the replicas. Only creating links
+  fails, with a "try again" message.
 - The redirect answers with a 302, so every visit reaches the server and a link
   can still be changed or removed later.
 
@@ -101,8 +104,10 @@ load balancer. This repo does not ship deployment files; a deployment needs to
 provide:
 
 - **A load balancer** in front of the instances. Point its health check at
-  `GET /health`, which returns 200 when the instance can reach the database and
-  503 within two seconds when it cannot.
+  `GET /health`. It returns 200 while the instance can serve some redirects
+  (from the cache, a replica or the primary) and 503 only when it can serve
+  none. Its body reports the primary, the replica and the cache separately,
+  for monitoring.
 - **A connection pooler**: PgBouncer in transaction mode, in its own container
   next to Postgres, with every instance pointed at it. One shared pooler is
   what caps the connections Postgres sees; a pooler per instance would not.
@@ -117,16 +122,17 @@ provide:
 
 Environment variables for each instance:
 
-| Variable              | Purpose                                                                                |
-| --------------------- | -------------------------------------------------------------------------------------- |
-| `DATABASE_URL`        | Connection string, pointing at the pooler                                              |
-| `DATABASE_DIRECT_URL` | Connection string of Postgres itself. Only migrations use it                           |
-| `DATABASE_POOL_MAX`   | Most connections one instance opens (default 10). Instances × this must fit the pooler |
-| `VALKEY_URL`          | Connection string of the shared Valkey, such as `redis://valkey:6379`                  |
-| `PORT`                | Port to listen on (default 3000)                                                       |
-| `ORIGIN`              | Public URL of the app, such as `https://sho.rt`. Short links are built from it         |
-| `ADDRESS_HEADER`      | Header carrying the visitor's IP behind a proxy, such as `X-Forwarded-For`             |
-| `XFF_DEPTH`           | Number of trusted proxies in front of the app, when using `X-Forwarded-For`            |
+| Variable              | Purpose                                                                                              |
+| --------------------- | ---------------------------------------------------------------------------------------------------- |
+| `DATABASE_URL`        | Connection string, pointing at the pooler                                                            |
+| `DATABASE_READ_URL`   | Optional. Connection string for reads, pointing at standby replicas. Unset, reads use `DATABASE_URL` |
+| `DATABASE_DIRECT_URL` | Connection string of Postgres itself. Only migrations use it                                         |
+| `DATABASE_POOL_MAX`   | Most connections one instance opens (default 10). Instances × this must fit the pooler               |
+| `VALKEY_URL`          | Connection string of the shared Valkey, such as `redis://valkey:6379`                                |
+| `PORT`                | Port to listen on (default 3000)                                                                     |
+| `ORIGIN`              | Public URL of the app, such as `https://sho.rt`. Short links are built from it                       |
+| `ADDRESS_HEADER`      | Header carrying the visitor's IP behind a proxy, such as `X-Forwarded-For`                           |
+| `XFF_DEPTH`           | Number of trusted proxies in front of the app, when using `X-Forwarded-For`                          |
 
 Set `ADDRESS_HEADER` whenever the app sits behind a proxy or load balancer.
 Without it every visitor appears to come from the proxy's address and they all

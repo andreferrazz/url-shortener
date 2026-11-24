@@ -48,7 +48,7 @@
 				maxlength={MAX_URL_LENGTH}
 				placeholder="https://example.com/a/very/long/path"
 				value={form?.url ?? ''}
-				aria-invalid={form?.message && !form.limited ? 'true' : undefined}
+				aria-invalid={form?.invalid ? 'true' : undefined}
 				aria-describedby={form?.message ? 'url-error' : undefined}
 			/>
 			<button disabled={submitting}>{submitting ? 'Shortening…' : 'Shorten'}</button>
