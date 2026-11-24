@@ -20,7 +20,7 @@ export const actions: Actions = {
 		const input = typeof value === 'string' ? value : '';
 
 		const target = parseTargetUrl(input, url.host);
-		if (!target.ok) return fail(400, { url: input, limited: false, message: target.message });
+		if (!target.ok) return fail(400, { url: input, invalid: true, message: target.message });
 
 		// After validation, so a typo does not use up the allowance.
 		const verdict = await limiter.check(getClientAddress());
@@ -28,12 +28,25 @@ export const actions: Actions = {
 			setHeaders({ 'retry-after': String(verdict.retryAfterSeconds) });
 			return fail(429, {
 				url: input,
-				limited: true,
+				invalid: false,
 				message: `You have created too many links. Try again in ${wait(verdict.retryAfterSeconds)}.`
 			});
 		}
 
-		const slug = await createLink(target.url);
+		let slug: string;
+		try {
+			slug = await createLink(target.url);
+		} catch (error) {
+			// The primary database is away, most likely mid-failover. Redirects
+			// still work; only creating links has to wait.
+			console.error('Could not create link:', error instanceof Error ? error.message : error);
+			return fail(503, {
+				url: input,
+				invalid: false,
+				message: 'Links cannot be created right now. Try again in a moment.'
+			});
+		}
+
 		return { shortUrl: `${url.origin}/${slug}`, target: target.url };
 	}
 };

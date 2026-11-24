@@ -2,6 +2,11 @@ import { defineEnvVars } from '@sveltejs/kit/env';
 
 export const variables = defineEnvVars({
 	DATABASE_URL: { description: 'The database connection string.' },
+	DATABASE_READ_URL: {
+		description:
+			'Optional connection string for read-only queries, pointing at standby replicas. Reads use DATABASE_URL when it is not set.',
+		schema: (value) => value || undefined
+	},
 	VALKEY_URL: {
 		description: 'Connection string of the Valkey (or Redis) server holding the redirect cache.'
 	},
